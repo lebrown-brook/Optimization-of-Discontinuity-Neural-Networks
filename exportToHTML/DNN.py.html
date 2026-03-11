@@ -1,0 +1,108 @@
+<html>
+<head>
+<title>DNN.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cf8e6d;}
+.s1 { color: #bcbec4;}
+.s2 { color: #7a7e85;}
+.s3 { color: #bcbec4;}
+.s4 { color: #2aacb8;}
+.s5 { color: #6aab73;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+DNN.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">numpy </span><span class="s0">as </span><span class="s1">np</span>
+<span class="s0">import </span><span class="s1">torch</span>
+<span class="s0">from </span><span class="s1">collections </span><span class="s0">import </span><span class="s1">OrderedDict</span>
+<span class="s0">import </span><span class="s1">discontinuous_layers </span><span class="s0">as </span><span class="s1">dl</span>
+<span class="s0">import </span><span class="s1">PiecewiseLinearActivation </span><span class="s0">as </span><span class="s1">pwlu</span>
+
+<span class="s2">#Neural network class with discontinuous layers at given indices inherits from torch.nn.Module</span>
+<span class="s0">class </span><span class="s1">DNN</span><span class="s3">(</span><span class="s1">torch</span><span class="s3">.</span><span class="s1">nn</span><span class="s3">.</span><span class="s1">Module</span><span class="s3">):</span>
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">input_size</span><span class="s3">, </span><span class="s1">hidden_layers</span><span class="s3">, </span><span class="s1">output_size</span><span class="s3">, </span><span class="s1">discontinuous_indices</span><span class="s3">=</span><span class="s0">None</span><span class="s3">, </span><span class="s1">epsilon_init </span><span class="s3">= </span><span class="s0">None</span><span class="s3">, </span><span class="s1">STE_true </span><span class="s3">= </span><span class="s0">False</span><span class="s3">, </span><span class="s1">ReLU_true </span><span class="s3">= </span><span class="s0">True</span><span class="s3">):</span>
+        <span class="s1">super</span><span class="s3">(</span><span class="s1">DNN</span><span class="s3">, </span><span class="s1">self</span><span class="s3">).</span><span class="s1">__init__</span><span class="s3">()</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">input_size </span><span class="s3">= </span><span class="s1">input_size</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">hidden_layers </span><span class="s3">= </span><span class="s1">hidden_layers</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">output_size </span><span class="s3">= </span><span class="s1">output_size</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">discontinuous_indices </span><span class="s3">= </span><span class="s1">discontinuous_indices </span><span class="s0">if </span><span class="s1">discontinuous_indices </span><span class="s0">is not None else </span><span class="s3">[]</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">epsilon_init </span><span class="s3">= </span><span class="s1">epsilon_init</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">STE_true </span><span class="s3">= </span><span class="s1">STE_true</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">ReLU_true </span><span class="s3">= </span><span class="s1">ReLU_true</span>
+
+
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">layers </span><span class="s3">= </span><span class="s1">self</span><span class="s3">.</span><span class="s1">build_network</span><span class="s3">()</span>
+
+
+    <span class="s0">def </span><span class="s1">build_network</span><span class="s3">(</span><span class="s1">self</span><span class="s3">):</span>
+        <span class="s1">layer_sizes </span><span class="s3">= [</span><span class="s1">self</span><span class="s3">.</span><span class="s1">input_size</span><span class="s3">] + </span><span class="s1">self</span><span class="s3">.</span><span class="s1">hidden_layers </span><span class="s3">+ [</span><span class="s1">self</span><span class="s3">.</span><span class="s1">output_size</span><span class="s3">]</span>
+        <span class="s1">layers </span><span class="s3">= </span><span class="s1">OrderedDict</span><span class="s3">()</span>
+        <span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">range</span><span class="s3">(</span><span class="s1">len</span><span class="s3">(</span><span class="s1">layer_sizes</span><span class="s3">) - </span><span class="s4">2</span><span class="s3">):</span>
+            <span class="s0">if </span><span class="s1">i </span><span class="s0">in </span><span class="s1">self</span><span class="s3">.</span><span class="s1">discontinuous_indices</span><span class="s3">:</span>
+                <span class="s1">layer_name </span><span class="s3">= </span><span class="s5">f&quot;discontinuous_</span><span class="s0">{</span><span class="s1">i</span><span class="s0">}</span><span class="s5">&quot;</span>
+                <span class="s1">layers</span><span class="s3">[</span><span class="s1">layer_name</span><span class="s3">] = </span><span class="s1">dl</span><span class="s3">.</span><span class="s1">DiscontinuousLayer</span><span class="s3">(</span><span class="s1">layer_sizes</span><span class="s3">[</span><span class="s1">i</span><span class="s3">], </span><span class="s1">layer_sizes</span><span class="s3">[</span><span class="s1">i </span><span class="s3">+ </span><span class="s4">1</span><span class="s3">], </span><span class="s1">epsilon_init</span><span class="s3">=</span><span class="s1">self</span><span class="s3">.</span><span class="s1">epsilon_init</span><span class="s3">, </span><span class="s1">STE_true </span><span class="s3">= </span><span class="s1">self</span><span class="s3">.</span><span class="s1">STE_true</span><span class="s3">, </span><span class="s1">ReLU_true</span><span class="s3">=</span><span class="s1">self</span><span class="s3">.</span><span class="s1">ReLU_true</span><span class="s3">)</span>
+            <span class="s0">else</span><span class="s3">:</span>
+                <span class="s1">layer_name </span><span class="s3">= </span><span class="s5">f&quot;dense_</span><span class="s0">{</span><span class="s1">i</span><span class="s0">}</span><span class="s5">&quot;</span>
+                <span class="s1">layers</span><span class="s3">[</span><span class="s1">layer_name</span><span class="s3">]= </span><span class="s1">torch</span><span class="s3">.</span><span class="s1">nn</span><span class="s3">.</span><span class="s1">Linear</span><span class="s3">(</span><span class="s1">layer_sizes</span><span class="s3">[</span><span class="s1">i</span><span class="s3">], </span><span class="s1">layer_sizes</span><span class="s3">[</span><span class="s1">i </span><span class="s3">+ </span><span class="s4">1</span><span class="s3">])</span>
+                <span class="s1">layers</span><span class="s3">[</span><span class="s5">f&quot;relu_</span><span class="s0">{</span><span class="s1">i</span><span class="s0">}</span><span class="s5">&quot;</span><span class="s3">] = </span><span class="s1">torch</span><span class="s3">.</span><span class="s1">nn</span><span class="s3">.</span><span class="s1">ELU</span><span class="s3">()</span>
+
+        <span class="s1">layer_name </span><span class="s3">= </span><span class="s5">f&quot;output_layer&quot;</span>
+        <span class="s1">layers</span><span class="s3">[</span><span class="s1">layer_name</span><span class="s3">] = </span><span class="s1">torch</span><span class="s3">.</span><span class="s1">nn</span><span class="s3">.</span><span class="s1">Linear</span><span class="s3">(</span><span class="s1">layer_sizes</span><span class="s3">[-</span><span class="s4">2</span><span class="s3">], </span><span class="s1">layer_sizes</span><span class="s3">[-</span><span class="s4">1</span><span class="s3">])</span>
+        <span class="s0">return </span><span class="s1">torch</span><span class="s3">.</span><span class="s1">nn</span><span class="s3">.</span><span class="s1">Sequential</span><span class="s3">(</span><span class="s1">layers</span><span class="s3">)</span>
+
+    <span class="s0">def </span><span class="s1">forward</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">x</span><span class="s3">):</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s3">.</span><span class="s1">layers</span><span class="s3">(</span><span class="s1">x</span><span class="s3">)</span>
+
+
+
+
+
+<span class="s2">#Neural network class with discontinuous layers at given indices inherits from torch.nn.Module</span>
+<span class="s0">class </span><span class="s1">PWLUDNN</span><span class="s3">(</span><span class="s1">torch</span><span class="s3">.</span><span class="s1">nn</span><span class="s3">.</span><span class="s1">Module</span><span class="s3">):</span>
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">input_size</span><span class="s3">, </span><span class="s1">hidden_layers</span><span class="s3">, </span><span class="s1">output_size</span><span class="s3">, </span><span class="s1">discontinuous_indices</span><span class="s3">=</span><span class="s0">None</span><span class="s3">, </span><span class="s1">epsilon_init </span><span class="s3">= </span><span class="s0">None</span><span class="s3">, </span><span class="s1">STE_true </span><span class="s3">= </span><span class="s0">False</span><span class="s3">, </span><span class="s1">ReLU_true </span><span class="s3">= </span><span class="s0">True</span><span class="s3">):</span>
+        <span class="s1">super</span><span class="s3">(</span><span class="s1">PWLUDNN</span><span class="s3">, </span><span class="s1">self</span><span class="s3">).</span><span class="s1">__init__</span><span class="s3">()</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">input_size </span><span class="s3">= </span><span class="s1">input_size</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">hidden_layers </span><span class="s3">= </span><span class="s1">hidden_layers</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">output_size </span><span class="s3">= </span><span class="s1">output_size</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">discontinuous_indices </span><span class="s3">= </span><span class="s1">discontinuous_indices </span><span class="s0">if </span><span class="s1">discontinuous_indices </span><span class="s0">is not None else </span><span class="s3">[]</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">epsilon_init </span><span class="s3">= </span><span class="s1">epsilon_init</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">STE_true </span><span class="s3">= </span><span class="s1">STE_true</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">ReLU_true </span><span class="s3">= </span><span class="s1">ReLU_true</span>
+
+
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">layers </span><span class="s3">= </span><span class="s1">self</span><span class="s3">.</span><span class="s1">build_network</span><span class="s3">()</span>
+
+
+    <span class="s0">def </span><span class="s1">build_network</span><span class="s3">(</span><span class="s1">self</span><span class="s3">):</span>
+        <span class="s1">layer_sizes </span><span class="s3">= [</span><span class="s1">self</span><span class="s3">.</span><span class="s1">input_size</span><span class="s3">] + </span><span class="s1">self</span><span class="s3">.</span><span class="s1">hidden_layers </span><span class="s3">+ [</span><span class="s1">self</span><span class="s3">.</span><span class="s1">output_size</span><span class="s3">]</span>
+        <span class="s1">layers </span><span class="s3">= </span><span class="s1">OrderedDict</span><span class="s3">()</span>
+        <span class="s0">for </span><span class="s1">i </span><span class="s0">in </span><span class="s1">range</span><span class="s3">(</span><span class="s1">len</span><span class="s3">(</span><span class="s1">layer_sizes</span><span class="s3">) - </span><span class="s4">2</span><span class="s3">):</span>
+            <span class="s0">if </span><span class="s1">i </span><span class="s0">in </span><span class="s1">self</span><span class="s3">.</span><span class="s1">discontinuous_indices</span><span class="s3">:</span>
+                <span class="s1">layer_name </span><span class="s3">= </span><span class="s5">f&quot;discontinuous_</span><span class="s0">{</span><span class="s1">i</span><span class="s0">}</span><span class="s5">&quot;</span>
+                <span class="s1">layers</span><span class="s3">[</span><span class="s1">layer_name</span><span class="s3">] = </span><span class="s1">torch</span><span class="s3">.</span><span class="s1">nn</span><span class="s3">.</span><span class="s1">Linear</span><span class="s3">(</span><span class="s1">layer_sizes</span><span class="s3">[</span><span class="s1">i</span><span class="s3">], </span><span class="s1">layer_sizes</span><span class="s3">[</span><span class="s1">i </span><span class="s3">+ </span><span class="s4">1</span><span class="s3">])</span>
+                <span class="s1">layers</span><span class="s3">[</span><span class="s5">f&quot;PWLU_discontinuous_</span><span class="s0">{</span><span class="s1">i</span><span class="s0">}</span><span class="s5">&quot;</span><span class="s3">] = </span><span class="s1">pwlu</span><span class="s3">.</span><span class="s1">PiecewiseLinearActivation</span><span class="s3">(</span><span class="s1">layer_sizes</span><span class="s3">[</span><span class="s1">i </span><span class="s3">+ </span><span class="s4">1</span><span class="s3">],</span>
+                                                                                   <span class="s1">epsilon_init</span><span class="s3">=</span><span class="s1">self</span><span class="s3">.</span><span class="s1">epsilon_init</span><span class="s3">)</span>
+            <span class="s0">else</span><span class="s3">:</span>
+                <span class="s1">layer_name </span><span class="s3">= </span><span class="s5">f&quot;dense_</span><span class="s0">{</span><span class="s1">i</span><span class="s0">}</span><span class="s5">&quot;</span>
+                <span class="s1">layers</span><span class="s3">[</span><span class="s1">layer_name</span><span class="s3">]= </span><span class="s1">torch</span><span class="s3">.</span><span class="s1">nn</span><span class="s3">.</span><span class="s1">Linear</span><span class="s3">(</span><span class="s1">layer_sizes</span><span class="s3">[</span><span class="s1">i</span><span class="s3">], </span><span class="s1">layer_sizes</span><span class="s3">[</span><span class="s1">i </span><span class="s3">+ </span><span class="s4">1</span><span class="s3">])</span>
+                <span class="s1">layers</span><span class="s3">[</span><span class="s5">f&quot;relu_</span><span class="s0">{</span><span class="s1">i</span><span class="s0">}</span><span class="s5">&quot;</span><span class="s3">] = </span><span class="s1">torch</span><span class="s3">.</span><span class="s1">nn</span><span class="s3">.</span><span class="s1">ELU</span><span class="s3">()</span>
+
+        <span class="s1">layer_name </span><span class="s3">= </span><span class="s5">f&quot;output_layer&quot;</span>
+        <span class="s1">layers</span><span class="s3">[</span><span class="s1">layer_name</span><span class="s3">] = </span><span class="s1">torch</span><span class="s3">.</span><span class="s1">nn</span><span class="s3">.</span><span class="s1">Linear</span><span class="s3">(</span><span class="s1">layer_sizes</span><span class="s3">[-</span><span class="s4">2</span><span class="s3">], </span><span class="s1">layer_sizes</span><span class="s3">[-</span><span class="s4">1</span><span class="s3">])</span>
+        <span class="s0">return </span><span class="s1">torch</span><span class="s3">.</span><span class="s1">nn</span><span class="s3">.</span><span class="s1">Sequential</span><span class="s3">(</span><span class="s1">layers</span><span class="s3">)</span>
+
+    <span class="s0">def </span><span class="s1">forward</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">x</span><span class="s3">):</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s3">.</span><span class="s1">layers</span><span class="s3">(</span><span class="s1">x</span><span class="s3">)</span>
+
+
+
+
+
+</pre>
+</body>
+</html>

@@ -1,0 +1,155 @@
+<html>
+<head>
+<title>discontinuous_layers.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cf8e6d;}
+.s1 { color: #bcbec4;}
+.s2 { color: #7a7e85;}
+.s3 { color: #bcbec4;}
+.s4 { color: #2aacb8;}
+.s5 { color: #6aab73;}
+</style>
+</head>
+<body bgcolor="#1e1f22">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+discontinuous_layers.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">numpy </span><span class="s0">as </span><span class="s1">np</span>
+<span class="s0">import </span><span class="s1">torch</span>
+<span class="s0">from </span><span class="s1">collections </span><span class="s0">import </span><span class="s1">OrderedDict</span>
+
+<span class="s2">#differentiable heaviside function</span>
+<span class="s0">class </span><span class="s1">heaviside_function</span><span class="s3">(</span><span class="s1">torch</span><span class="s3">.</span><span class="s1">autograd</span><span class="s3">.</span><span class="s1">Function</span><span class="s3">):</span>
+    <span class="s3">@</span><span class="s1">staticmethod</span>
+    <span class="s0">def </span><span class="s1">forward</span><span class="s3">(</span><span class="s1">ctx</span><span class="s3">, </span><span class="s1">input</span><span class="s3">):</span>
+        <span class="s0">return </span><span class="s3">(</span><span class="s1">input </span><span class="s3">&gt; </span><span class="s4">0</span><span class="s3">).</span><span class="s1">float</span><span class="s3">()</span>
+
+    <span class="s3">@</span><span class="s1">staticmethod</span>
+    <span class="s0">def </span><span class="s1">backward</span><span class="s3">(</span><span class="s1">ctx</span><span class="s3">, </span><span class="s1">grad_output</span><span class="s3">):</span>
+        <span class="s2"># Subgradient is zero everywhere</span>
+        <span class="s0">return </span><span class="s1">torch</span><span class="s3">.</span><span class="s1">zeros_like</span><span class="s3">(</span><span class="s1">grad_output</span><span class="s3">), </span><span class="s0">None</span>
+
+
+<span class="s2">#straight-through estimator with soft indicator function from -0.01 to 0.01</span>
+<span class="s0">class </span><span class="s1">heaviside_function_STE</span><span class="s3">(</span><span class="s1">torch</span><span class="s3">.</span><span class="s1">autograd</span><span class="s3">.</span><span class="s1">Function</span><span class="s3">):</span>
+    <span class="s3">@</span><span class="s1">staticmethod</span>
+    <span class="s0">def </span><span class="s1">forward</span><span class="s3">(</span><span class="s1">ctx</span><span class="s3">, </span><span class="s1">input</span><span class="s3">):</span>
+        <span class="s1">ctx</span><span class="s3">.</span><span class="s1">save_for_backward</span><span class="s3">(</span><span class="s1">input</span><span class="s3">)</span>
+        <span class="s0">return </span><span class="s3">(</span><span class="s1">input </span><span class="s3">&gt; </span><span class="s4">0</span><span class="s3">).</span><span class="s1">float</span><span class="s3">()</span>
+
+    <span class="s3">@</span><span class="s1">staticmethod</span>
+    <span class="s0">def </span><span class="s1">backward</span><span class="s3">(</span><span class="s1">ctx</span><span class="s3">, </span><span class="s1">grad_output</span><span class="s3">):</span>
+        <span class="s2"># Use a straight-through estimator (STE)</span>
+        <span class="s1">input</span><span class="s3">, = </span><span class="s1">ctx</span><span class="s3">.</span><span class="s1">saved_tensors</span>
+
+        <span class="s0">return </span><span class="s1">torch</span><span class="s3">.</span><span class="s1">nn</span><span class="s3">.</span><span class="s1">functional</span><span class="s3">.</span><span class="s1">hardtanh</span><span class="s3">(</span><span class="s1">grad_output</span><span class="s3">)</span>
+        <span class="s2"># return grad_output</span>
+        <span class="s2">#sigmoid = torch.sigmoid(input)</span>
+        <span class="s2">#surrogate_grad = sigmoid * (1 - sigmoid)  # d/dx sigmoid(x)</span>
+        <span class="s2">#return grad_output * surrogate_grad</span>
+
+
+<span class="s2"># discontinuous layer which has a relu + epsilon * heaviside function</span>
+<span class="s0">class </span><span class="s1">DiscontinuousLayer</span><span class="s3">(</span><span class="s1">torch</span><span class="s3">.</span><span class="s1">nn</span><span class="s3">.</span><span class="s1">Module</span><span class="s3">):</span>
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">input_size</span><span class="s3">, </span><span class="s1">output_size</span><span class="s3">, </span><span class="s1">epsilon_init </span><span class="s3">= </span><span class="s0">None</span><span class="s3">, </span><span class="s1">STE_true </span><span class="s3">= </span><span class="s0">False</span><span class="s3">, </span><span class="s1">ReLU_true </span><span class="s3">= </span><span class="s0">True</span><span class="s3">):</span>
+        <span class="s1">super</span><span class="s3">(</span><span class="s1">DiscontinuousLayer</span><span class="s3">, </span><span class="s1">self</span><span class="s3">).</span><span class="s1">__init__</span><span class="s3">()</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">linear </span><span class="s3">= </span><span class="s1">torch</span><span class="s3">.</span><span class="s1">nn</span><span class="s3">.</span><span class="s1">Linear</span><span class="s3">(</span><span class="s1">input_size</span><span class="s3">, </span><span class="s1">output_size</span><span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">relu </span><span class="s3">= </span><span class="s1">torch</span><span class="s3">.</span><span class="s1">nn</span><span class="s3">.</span><span class="s1">ELU</span><span class="s3">()</span>
+        <span class="s2">#init linear layer with 1s for weights and -5 for biases</span>
+            <span class="s2">#self.linear.weight.data.fill_(1.0)</span>
+            <span class="s2">#self.linear.bias.data.fill_(-5.0)</span>
+        <span class="s0">if </span><span class="s1">epsilon_init </span><span class="s0">is not None</span><span class="s3">:</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">epsilon </span><span class="s3">= </span><span class="s1">torch</span><span class="s3">.</span><span class="s1">nn</span><span class="s3">.</span><span class="s1">Parameter</span><span class="s3">(</span><span class="s1">torch</span><span class="s3">.</span><span class="s1">tensor</span><span class="s3">(</span><span class="s1">epsilon_init</span><span class="s3">, </span><span class="s1">dtype</span><span class="s3">=</span><span class="s1">torch</span><span class="s3">.</span><span class="s1">float32</span><span class="s3">, </span><span class="s1">device</span><span class="s3">=</span><span class="s5">'cuda' </span><span class="s0">if </span><span class="s1">torch</span><span class="s3">.</span><span class="s1">cuda</span><span class="s3">.</span><span class="s1">is_available</span><span class="s3">() </span><span class="s0">else </span><span class="s5">'cpu'</span><span class="s3">))</span>
+        <span class="s0">else</span><span class="s3">:</span>
+            <span class="s2">#init epsilon with random values</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">epsilon </span><span class="s3">= </span><span class="s1">torch</span><span class="s3">.</span><span class="s1">nn</span><span class="s3">.</span><span class="s1">Parameter</span><span class="s3">(</span><span class="s1">torch</span><span class="s3">.</span><span class="s1">randn</span><span class="s3">(</span><span class="s1">output_size</span><span class="s3">, </span><span class="s1">dtype</span><span class="s3">=</span><span class="s1">torch</span><span class="s3">.</span><span class="s1">float32</span><span class="s3">, </span><span class="s1">device</span><span class="s3">=</span><span class="s5">'cuda' </span><span class="s0">if </span><span class="s1">torch</span><span class="s3">.</span><span class="s1">cuda</span><span class="s3">.</span><span class="s1">is_available</span><span class="s3">() </span><span class="s0">else </span><span class="s5">'cpu'</span><span class="s3">))</span>
+
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">STE_true </span><span class="s3">= </span><span class="s1">STE_true</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">ReLU_true </span><span class="s3">= </span><span class="s1">ReLU_true</span>
+
+        <span class="s2">#init linear layer weights and biases randomly</span>
+        <span class="s1">torch</span><span class="s3">.</span><span class="s1">nn</span><span class="s3">.</span><span class="s1">init</span><span class="s3">.</span><span class="s1">xavier_uniform_</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">linear</span><span class="s3">.</span><span class="s1">weight</span><span class="s3">)</span>
+
+    <span class="s0">def </span><span class="s1">forward</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">x</span><span class="s3">):</span>
+        <span class="s1">x </span><span class="s3">= </span><span class="s1">self</span><span class="s3">.</span><span class="s1">linear</span><span class="s3">(</span><span class="s1">x</span><span class="s3">)</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s3">.</span><span class="s1">STE_true</span><span class="s3">:</span>
+            <span class="s1">y </span><span class="s3">= </span><span class="s1">torch</span><span class="s3">.</span><span class="s1">mul</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">epsilon</span><span class="s3">, </span><span class="s1">heaviside_function_STE</span><span class="s3">.</span><span class="s1">apply</span><span class="s3">(</span><span class="s1">x</span><span class="s3">))</span>
+        <span class="s0">else</span><span class="s3">:</span>
+            <span class="s1">y </span><span class="s3">= </span><span class="s1">torch</span><span class="s3">.</span><span class="s1">mul</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">epsilon</span><span class="s3">, </span><span class="s1">heaviside_function</span><span class="s3">.</span><span class="s1">apply</span><span class="s3">(</span><span class="s1">x</span><span class="s3">))</span>
+
+        <span class="s0">if </span><span class="s1">self</span><span class="s3">.</span><span class="s1">ReLU_true</span><span class="s3">:</span>
+            <span class="s0">return </span><span class="s1">self</span><span class="s3">.</span><span class="s1">relu</span><span class="s3">(</span><span class="s1">x</span><span class="s3">) + </span><span class="s1">y</span>
+        <span class="s0">else</span><span class="s3">:</span>
+            <span class="s0">return </span><span class="s1">y</span>
+
+
+
+
+<span class="s2"># continuous discontinuous layer which has a relu + epsilon * heaviside function, and connecting linear piece from 0 to delta</span>
+<span class="s0">class </span><span class="s1">contDiscontinuousLayer</span><span class="s3">(</span><span class="s1">torch</span><span class="s3">.</span><span class="s1">nn</span><span class="s3">.</span><span class="s1">Module</span><span class="s3">):</span>
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">input_size</span><span class="s3">, </span><span class="s1">output_size</span><span class="s3">, </span><span class="s1">epsilon_init</span><span class="s3">=</span><span class="s0">None</span><span class="s3">, </span><span class="s1">STE_true</span><span class="s3">=</span><span class="s0">False</span><span class="s3">, </span><span class="s1">ReLU_true</span><span class="s3">=</span><span class="s0">True</span><span class="s3">, </span><span class="s1">delta</span><span class="s3">=</span><span class="s4">0.1</span><span class="s3">):</span>
+        <span class="s1">super</span><span class="s3">(</span><span class="s1">contDiscontinuousLayer</span><span class="s3">, </span><span class="s1">self</span><span class="s3">).</span><span class="s1">__init__</span><span class="s3">()</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">linear </span><span class="s3">= </span><span class="s1">torch</span><span class="s3">.</span><span class="s1">nn</span><span class="s3">.</span><span class="s1">Linear</span><span class="s3">(</span><span class="s1">input_size</span><span class="s3">, </span><span class="s1">output_size</span><span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">relu </span><span class="s3">= </span><span class="s1">torch</span><span class="s3">.</span><span class="s1">nn</span><span class="s3">.</span><span class="s1">ELU</span><span class="s3">()</span>
+        <span class="s2"># init linear layer with 1s for weights and -5 for biases</span>
+        <span class="s2"># self.linear.weight.data.fill_(1.0)</span>
+        <span class="s2"># self.linear.bias.data.fill_(-5.0)</span>
+        <span class="s0">if </span><span class="s1">epsilon_init </span><span class="s0">is not None</span><span class="s3">:</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">epsilon </span><span class="s3">= </span><span class="s1">torch</span><span class="s3">.</span><span class="s1">nn</span><span class="s3">.</span><span class="s1">Parameter</span><span class="s3">(</span><span class="s1">torch</span><span class="s3">.</span><span class="s1">tensor</span><span class="s3">(</span><span class="s1">epsilon_init</span><span class="s3">, </span><span class="s1">dtype</span><span class="s3">=</span><span class="s1">torch</span><span class="s3">.</span><span class="s1">float32</span><span class="s3">,</span>
+                                                           <span class="s1">device</span><span class="s3">=</span><span class="s5">'cuda' </span><span class="s0">if </span><span class="s1">torch</span><span class="s3">.</span><span class="s1">cuda</span><span class="s3">.</span><span class="s1">is_available</span><span class="s3">() </span><span class="s0">else </span><span class="s5">'cpu'</span><span class="s3">))</span>
+        <span class="s0">else</span><span class="s3">:</span>
+            <span class="s2"># init epsilon with random values</span>
+            <span class="s1">self</span><span class="s3">.</span><span class="s1">epsilon </span><span class="s3">= </span><span class="s1">torch</span><span class="s3">.</span><span class="s1">nn</span><span class="s3">.</span><span class="s1">Parameter</span><span class="s3">(</span><span class="s1">torch</span><span class="s3">.</span><span class="s1">randn</span><span class="s3">(</span><span class="s1">output_size</span><span class="s3">, </span><span class="s1">dtype</span><span class="s3">=</span><span class="s1">torch</span><span class="s3">.</span><span class="s1">float32</span><span class="s3">,</span>
+                                                          <span class="s1">device</span><span class="s3">=</span><span class="s5">'cuda' </span><span class="s0">if </span><span class="s1">torch</span><span class="s3">.</span><span class="s1">cuda</span><span class="s3">.</span><span class="s1">is_available</span><span class="s3">() </span><span class="s0">else </span><span class="s5">'cpu'</span><span class="s3">))</span>
+
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">STE_true </span><span class="s3">= </span><span class="s1">STE_true</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">ReLU_true </span><span class="s3">= </span><span class="s1">ReLU_true</span>
+
+        <span class="s2"># init linear layer weights and biases randomly</span>
+        <span class="s1">torch</span><span class="s3">.</span><span class="s1">nn</span><span class="s3">.</span><span class="s1">init</span><span class="s3">.</span><span class="s1">xavier_uniform_</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">linear</span><span class="s3">.</span><span class="s1">weight</span><span class="s3">)</span>
+
+    <span class="s0">def </span><span class="s1">forward</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">x</span><span class="s3">):</span>
+        <span class="s1">x </span><span class="s3">= </span><span class="s1">self</span><span class="s3">.</span><span class="s1">linear</span><span class="s3">(</span><span class="s1">x</span><span class="s3">)</span>
+        <span class="s0">if </span><span class="s1">self</span><span class="s3">.</span><span class="s1">STE_true</span><span class="s3">:</span>
+            <span class="s1">y </span><span class="s3">= </span><span class="s1">torch</span><span class="s3">.</span><span class="s1">mul</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">epsilon</span><span class="s3">, </span><span class="s1">heaviside_function_STE</span><span class="s3">.</span><span class="s1">apply</span><span class="s3">(</span><span class="s1">x</span><span class="s3">))</span>
+        <span class="s0">else</span><span class="s3">:</span>
+            <span class="s1">y </span><span class="s3">= </span><span class="s1">torch</span><span class="s3">.</span><span class="s1">mul</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">epsilon</span><span class="s3">, </span><span class="s1">heaviside_function</span><span class="s3">.</span><span class="s1">apply</span><span class="s3">(</span><span class="s1">x</span><span class="s3">))</span>
+
+        <span class="s0">if </span><span class="s1">self</span><span class="s3">.</span><span class="s1">ReLU_true</span><span class="s3">:</span>
+            <span class="s0">return </span><span class="s1">self</span><span class="s3">.</span><span class="s1">relu</span><span class="s3">(</span><span class="s1">x</span><span class="s3">) + </span><span class="s1">y</span>
+        <span class="s0">else</span><span class="s3">:</span>
+            <span class="s0">return </span><span class="s1">y</span>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<span class="s2"># discontinuous layer with to different linear layers</span>
+<span class="s0">class </span><span class="s1">DiscontinuousLayer2</span><span class="s3">(</span><span class="s1">torch</span><span class="s3">.</span><span class="s1">nn</span><span class="s3">.</span><span class="s1">Module</span><span class="s3">):</span>
+    <span class="s0">def </span><span class="s1">__init__</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">input_size</span><span class="s3">, </span><span class="s1">output_size</span><span class="s3">):</span>
+        <span class="s1">super</span><span class="s3">(</span><span class="s1">DiscontinuousLayer2</span><span class="s3">, </span><span class="s1">self</span><span class="s3">).</span><span class="s1">__init__</span><span class="s3">()</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">linear1 </span><span class="s3">= </span><span class="s1">torch</span><span class="s3">.</span><span class="s1">nn</span><span class="s3">.</span><span class="s1">Linear</span><span class="s3">(</span><span class="s1">input_size</span><span class="s3">, </span><span class="s1">output_size</span><span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">linear2 </span><span class="s3">= </span><span class="s1">torch</span><span class="s3">.</span><span class="s1">nn</span><span class="s3">.</span><span class="s1">Linear</span><span class="s3">(</span><span class="s1">input_size</span><span class="s3">, </span><span class="s1">output_size</span><span class="s3">)</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">relu </span><span class="s3">= </span><span class="s1">torch</span><span class="s3">.</span><span class="s1">nn</span><span class="s3">.</span><span class="s1">ReLU</span><span class="s3">()</span>
+        <span class="s1">self</span><span class="s3">.</span><span class="s1">epsilon </span><span class="s3">= </span><span class="s1">torch</span><span class="s3">.</span><span class="s1">nn</span><span class="s3">.</span><span class="s1">Parameter</span><span class="s3">(</span><span class="s1">torch</span><span class="s3">.</span><span class="s1">zeros</span><span class="s3">(</span><span class="s1">output_size</span><span class="s3">))</span>
+
+    <span class="s0">def </span><span class="s1">forward</span><span class="s3">(</span><span class="s1">self</span><span class="s3">, </span><span class="s1">x</span><span class="s3">):</span>
+        <span class="s1">x1 </span><span class="s3">= </span><span class="s1">self</span><span class="s3">.</span><span class="s1">linear1</span><span class="s3">(</span><span class="s1">x</span><span class="s3">)</span>
+        <span class="s1">x2 </span><span class="s3">= </span><span class="s1">self</span><span class="s3">.</span><span class="s1">linear2</span><span class="s3">(</span><span class="s1">x</span><span class="s3">)</span>
+        <span class="s0">return </span><span class="s1">self</span><span class="s3">.</span><span class="s1">relu</span><span class="s3">(</span><span class="s1">x1</span><span class="s3">) + </span><span class="s1">torch</span><span class="s3">.</span><span class="s1">mul</span><span class="s3">(</span><span class="s1">self</span><span class="s3">.</span><span class="s1">epsilon</span><span class="s3">, </span><span class="s1">HeavisideFunction</span><span class="s3">.</span><span class="s1">apply</span><span class="s3">(</span><span class="s1">x</span><span class="s3">, </span><span class="s1">torch</span><span class="s3">.</span><span class="s1">tensor</span><span class="s3">(</span><span class="s4">0.0</span><span class="s3">, </span><span class="s1">device</span><span class="s3">=</span><span class="s1">x</span><span class="s3">.</span><span class="s1">device</span><span class="s3">)))</span></pre>
+</body>
+</html>
