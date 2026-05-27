@@ -9,6 +9,9 @@ dependencies:
   - matplotlib
   - pytorch
   - cpuonly
+  - pillow
+  - torchvision
+  - scipy
   - pip
   - pip:
     - pytest

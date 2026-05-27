@@ -22,5 +22,15 @@ __pycache__/
 # Ignore CSV data files
 *.csv
 
-# Ignore pzgad package
+# Ignore pygad package
 pygad_package/
+
+
+# Ignore deltaNN package
+deltaNN/
+
+# Ignore edge detection dataset
+EdgeDetectionData/
+
+# Ignore build artifacts
+*.egg-info/

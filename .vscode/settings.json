@@ -1,3 +1,41 @@
 {
     "git.ignoreLimitWarning": true
+
+    "todo-tree.highlights.customHighlight": {
+    "TODO": {
+        "icon": "check",
+        "foreground": "#FFF",
+        "background": "#ffbd2a",
+        "type": "tag"
+    },
+    "FIXME": {
+        "icon": "flame",
+        "foreground": "#FFF",
+        "background": "#f06292",
+        "type": "text"
+    },
+    "BUG": {
+        "icon": "bug",
+        "foreground": "#FFF",
+        "background": "#f44336",
+        "type": "whole-line"
+    },
+    "REVIEW": {
+        "icon": "eye",
+        "foreground": "#FFF",
+        "background": "#00bcd4",
+        "type": "tag-and-comment"
+    }
+    }
+
+        "todo-tree.filtering.excludeGlobs": [
+    "**/node_modules",
+    "**/.venv",
+    "**/venv",
+    "**/__pycache__",
+    "**/build",
+    "**/dist",
+    "**/*.csv"  // Exclude your large experiment log files
+]
 }
+
