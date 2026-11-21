@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import heapq
 from typing import Dict, List, Optional
 
@@ -18,7 +18,8 @@ class RegionMemoryES:
     """
     Stores top-mu solutions per region and provides weighted parent sampling.
 
-    Region lookup uses region_matrix.tobytes() as hashable dictionary key.
+    Region lookup uses region_matrix.tobytes() as a key, or an empty key
+    when region tracking is disabled.
     """
 
     def __init__(self, mu_per_region: int, max_regions: int = 1000):
@@ -110,14 +111,47 @@ class RegionMemoryES:
     def get_visits(self, region_key: bytes) -> int:
         return self._seen_regions.get(region_key, 0)
 
-    def add_candidate(self, weights: np.ndarray, fitness: float, loss: float, region_matrix: np.ndarray) -> bool:
+    def refresh(self, evaluate) -> int:
+        """Rescore retained candidates and rebuild the heaps at the new delta."""
+        # Between generations the archive can temporarily hold excess regions.
+        self._prune_regions()
+        solutions = {}
+        heaps = {}
+        for sid, record in self._solutions.items():
+            fitness, loss, regions = evaluate(record.weights)
+            key = record.region_key if regions is None else np.ascontiguousarray(regions).tobytes()
+            solutions[sid] = replace(record, fitness=fitness, loss=loss, region_key=key)
+            heaps.setdefault(key, []).append((fitness, sid))
+
+        evaluated = len(solutions)
+        for key, entries in heaps.items():
+            if key not in self._seen_regions:
+                self._seen_regions[key] = 0
+                self.total_regions_discovered += 1
+            if len(entries) > self.mu_per_region:
+                entries.sort(key=lambda entry: entry[0], reverse=True)
+                for _, sid in entries[self.mu_per_region:]:
+                    del solutions[sid]
+                del entries[self.mu_per_region:]
+            heapq.heapify(entries)
+
+        self._solutions = solutions
+        self._region_heaps = heaps
+        self._sampling_cache_dirty = True
+        self._min_elite_fitness = -float("inf")
+        self._prune_regions()
+        if self.num_regions == self.max_regions and self.num_regions:
+            self._min_elite_fitness = min(max(heap)[0] for heap in self._region_heaps.values())
+        return evaluated
+
+    def add_candidate(self, weights: np.ndarray, fitness: float, loss: float, region_matrix: Optional[np.ndarray]) -> bool:
         """
         Adds a candidate if it belongs to a new region, if region list has space,
         or if it outperforms the current worst candidate in that region.
 
         Returns True only when the candidate is accepted into memory.
         """
-        region_key = np.ascontiguousarray(region_matrix).tobytes()
+        region_key = b"" if region_matrix is None else np.ascontiguousarray(region_matrix).tobytes()
         
         if region_key not in self._seen_regions:
             self._seen_regions[region_key] = 0

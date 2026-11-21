@@ -34,3 +34,6 @@ EdgeDetectionData/
 
 # Ignore build artifacts
 *.egg-info/
+
+#Ignore results and logs
+results/

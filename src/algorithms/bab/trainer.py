@@ -1,6 +1,9 @@
+from time import perf_counter
+
 import numpy as np
 import torch
 import pygad
+
 from src.visualization.plotter import plot_bab_iteration_best, analyze_and_plot_gadnn_regions
 
 class BaBTrainer:
@@ -47,7 +50,10 @@ class BaBTrainer:
         self.y_train = y_train
         self.ga_settings = ga_settings
         self.bab_settings = bab_settings
-        self.fitness_to_loss = fitness_to_loss if fitness_to_loss else lambda f: -f
+        if fitness_to_loss is None:
+            print("BaBTrainer: fitness_to_loss unspecified, defaulting to lambda f: -f")
+            fitness_to_loss = lambda f: -f
+        self.fitness_to_loss = fitness_to_loss
         self.config_name = config_name
         self.delta_decay = delta_decay
         self.enable_plotting = enable_plotting
@@ -70,6 +76,8 @@ class BaBTrainer:
         self.top_3_ids_prev = set() # IDs of top 3 branches from previous iteration
         self.parent_map = {} # ID -> Parent ID
         self.history_log = [] # List of iteration stats
+        self.refresh_evaluations = 0
+        self.refresh_seconds = 0.0
 
         # Helper model instance for region calculation (weights are passed to forward)
         # We assume the model class can vary, but usually it is GADNN
@@ -91,9 +99,15 @@ class BaBTrainer:
 
         # 1. Initialize branches (Random Start)
         self._initialize_branches_random()
+        self.history_log = []
+        self.refresh_evaluations = 0
+        self.refresh_seconds = 0.0
 
         best_global_solution = None
         best_global_fitness = -float('inf')
+        has_pwlu = self.model_template.pwlu_layer_count > 0
+        delta_factor = self.delta_decay ** self.generations_per_iter
+        annealing = has_pwlu and delta_factor != 1.0
 
         for iter_idx in range(self.num_bab_iterations):
             print(f"\n--- BaB Iteration {iter_idx + 1}/{self.num_bab_iterations} ---")
@@ -112,12 +126,14 @@ class BaBTrainer:
                 "iteration": iter_idx,
                 "branches": []
             }
+            if has_pwlu:
+                current_iter_log["delta"] = self.model_template.delta
 
             # Identify Top 3 Branches for this iteration (needed for logic and logging)
             # We aggregate best fitness per branch
             branch_stats = []
             for b_id, ga_inst in zip(self.branch_ids, self.branches):
-                best_sol, best_fit, _ = ga_inst.best_solution()
+                best_sol, best_fit, _ = ga_inst.best_solution(pop_fitness=ga_inst.last_generation_fitness)
 
                 # Get local history
                 full_hist = self.loss_histories.get(b_id, [])
@@ -149,12 +165,16 @@ class BaBTrainer:
                 continue
 
             iter_best = max(all_solutions, key=lambda x: x['fitness'])
-            if iter_best['fitness'] > best_global_fitness:
+            iter_loss = self.fitness_to_loss(iter_best['fitness'])
+            if annealing:
+                print(f"  [Iteration Best] iter={iter_idx + 1}, loss={iter_loss:.4f}")
+            elif iter_best['fitness'] > best_global_fitness:
                 best_global_fitness = iter_best['fitness']
                 best_global_solution = iter_best['solution']
-                print(f"  [New Global Best] Fitness: {best_global_fitness:.6f}")
+                print(f"  [New Global Best] iter={iter_idx + 1}, loss={iter_loss:.4f}")
             else:
-                 print(f"  [Iteration Best] Fitness: {iter_best['fitness']:.6f} (Global: {best_global_fitness:.6f})")
+                global_loss = self.fitness_to_loss(best_global_fitness)
+                print(f"  [Iteration Best] iter={iter_idx + 1}, loss={iter_loss:.4f} (Global: {global_loss:.4f})")
 
             # Identify Top 3 Branches for this iteration
             # Sort by fitness descending
@@ -165,7 +185,7 @@ class BaBTrainer:
             print( " Branch Ranking: " + ", ".join([f"{i+1}. ID: {b['id']}, Fitness: {b['fitness']:.6f}" for i, b in enumerate(sorted_branches)]))
 
 
-            if self.enable_plotting:
+            if self.enable_plotting:  
                 # Plot top 3 solutions
                 plot_bab_iteration_best(
                     self.model_template,
@@ -194,10 +214,6 @@ class BaBTrainer:
                         x_min=x_min_plot, x_max=x_max_plot
                      )
 
-            # Decay delta if applicable
-            if self.delta_decay != 1.0:
-                self._decay_delta()
-
             # If not the last iteration, perform branching (Filter -> Perturb -> Re-init)
             if iter_idx < self.num_bab_iterations - 1:
                 # 4. Filter and Select Seeds
@@ -206,22 +222,36 @@ class BaBTrainer:
                 print(f"  Selected {len(seeds)} seeds for next iteration{msg_div}.")
 
                 # 5. Create new branches from seeds (Perturbation)
+                if annealing:
+                    self.model_template.delta *= delta_factor
                 self._update_branches_with_seeds(seeds, iter_idx + 1)
-            #reduce delta by delta decay factor ^(num_bab_iterations) if applicable
 
-
-        # If no solution found (unlikely), return something safe
-        if best_global_solution is None and len(self.branches) > 0:
-            best_global_solution, best_global_fitness, _ = self.branches[0].best_solution()
-
-        # Update the first branch to hold the best solution for compatibility if needed
-        # (e.g. if caller expects ga_instance.best_solution() to return the global best)
-        if self.branches:
-            # We can't easily force PyGAD to adopt a best solution without hacking population,
-            # but we return the solution explicitly.
-            pass
+        if annealing:
+            best_global_solution, best_global_fitness = self._select_finalist()
+        elif best_global_solution is None and self.branches:
+            branch = self.branches[0]
+            best_global_solution, best_global_fitness, _ = branch.best_solution(
+                pop_fitness=branch.last_generation_fitness
+            )
 
         return best_global_solution, best_global_fitness, self.branches[0], self.history_log
+
+    def _select_finalist(self):
+        start = perf_counter()
+        final_delta = self.model_template.delta
+        ga_instance = self.branches[0]
+        best_solution, best_fitness = None, -float("inf")
+        for round_stats in self.history_log:
+            for finalist in round_stats["branches"]:
+                solution, fitness = finalist["solution"], finalist["fitness"]
+                if round_stats["delta"] != final_delta:
+                    fitness = ga_instance.fitness_func(ga_instance, solution, None)
+                    self.refresh_evaluations += 1
+                if best_solution is None or fitness > best_fitness:
+                    best_solution, best_fitness = solution, fitness
+        if self.refresh_evaluations:
+            self.refresh_seconds = perf_counter() - start
+        return best_solution, best_fitness
 
     def _initialize_branches_random(self):
         """Initializes num_branches GA instances with random populations."""
@@ -260,7 +290,7 @@ class BaBTrainer:
         def wrapped_on_generation(ga_inst):
             # Log Loss
             if branch_id:
-                _, best_fit, _ = ga_inst.best_solution()
+                _, best_fit, _ = ga_inst.best_solution(pop_fitness=ga_inst.last_generation_fitness)
                 loss = self.fitness_to_loss(best_fit)
                 if branch_id in self.loss_histories:
                     self.loss_histories[branch_id].append(loss)
@@ -521,14 +551,6 @@ class BaBTrainer:
     def _create_population_perturbation(self, seed_sol, pop_size):
         # Legacy wrapper or unused
         return self._create_population_perturbation_multi([seed_sol], pop_size)
-
-    def _decay_delta(self):
-        """Decays the delta parameter of the models."""
-        if hasattr(self.model_template, 'delta'):
-            decay_amount = self.delta_decay ** self.generations_per_iter
-            self.model_template.delta *= decay_amount
-            if 'pwlu' in self.config_name:
-                print(f"  [Delta Decay] Updated model_template.delta to {self.model_template.delta:.6f}")
 
     def _perturb_he_kaiming(self, seed_sol, count, layer_params):
         """Perturbs weights with He initialization variance."""

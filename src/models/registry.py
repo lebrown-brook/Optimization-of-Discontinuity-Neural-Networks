@@ -1,10 +1,9 @@
-from src.models.dnn import DNN, PWLUDNN
+from src.models.dnn import DNN
 from src.models.gadnn import GADNN
 from src.models.sigmoidnn import sigmoidNN
 
 MODEL_REGISTRY = {
     'dnn': DNN,
-    'pwludnn': PWLUDNN,
     'gadnn': GADNN,
     'sigmoidnn': sigmoidNN,
 }

@@ -1,7 +1,6 @@
 import numpy as np
 import torch
 from torch.utils.data import TensorDataset, DataLoader
-import matplotlib
 
 from dataclasses import dataclass, field
 from typing import List, Tuple, Sequence
@@ -10,10 +9,15 @@ from typing import List, Tuple, Sequence
 
 #train dnn with the generated data
 def backprop(dnn_list: Sequence[torch.nn.Module], x: torch.Tensor, y: torch.Tensor, num_epochs: int = 5000,
-              learning_rate: float = 0.001, delta_factor: float = 0.9, lambda_reg: float = 0.01, config_name: str = "", scaler=None, batch_size: int = None) -> Tuple[List[torch.nn.Module], List[float], List[List[float]]]:
+              learning_rate: float = 0.001, delta_factor: float = 0.9, lambda_reg: float = 0.01, config_name: str = "", scaler=None, batch_size: int = None, loss_function: str = "mse") -> Tuple[List[torch.nn.Module], List[float], List[List[float]]]:
     dnn_list = list(dnn_list) if isinstance(dnn_list, (list, tuple)) else [dnn_list]
 
-    criterion = torch.nn.MSELoss()
+    if loss_function == "mse":
+        criterion = torch.nn.MSELoss()
+    elif loss_function == "mae":
+        criterion = torch.nn.L1Loss()
+    else:
+        raise ValueError(f"Unknown loss_function '{loss_function}'. Choose 'mse' or 'mae'.")
     final_losses = [0.0] * len(dnn_list)
     loss_histories = [[] for _ in range(len(dnn_list))]
 
@@ -57,9 +61,7 @@ def backprop(dnn_list: Sequence[torch.nn.Module], x: torch.Tensor, y: torch.Tens
                 outputs = dnn(batch_x)
                 loss = criterion(outputs, batch_y)
 
-                l2_reg = torch.tensor(0.0, device=batch_x.device)
-                for param in dnn.parameters():
-                    l2_reg = l2_reg + torch.norm(param, p=2) ** 2
+                l2_reg = sum(p.norm(2) ** 2 for p in dnn.parameters())
                 loss = loss + lambda_reg * l2_reg
 
                 loss.backward()
@@ -105,9 +107,6 @@ def backprop(dnn_list: Sequence[torch.nn.Module], x: torch.Tensor, y: torch.Tens
                 current_lr = optimizers[i].param_groups[0]['lr']
                 print(f'{dnn.name} ({config_name}), epoch={epoch+1}, loss={current_epoch_losses[i]:.4f}, lr={current_lr:.6f}')
 
-        #if epoch <= 10 or epoch % 100 == 0 or epoch == num_epochs - 1 or not any(active_models):
-            #plotNN_list(dnn_list, x, y, n=epoch, config_name=config_name, scaler=scaler)
-
     # Restore best weights for any models that finished without early stopping triggering (optional, but good practice)
     for i, dnn in enumerate(dnn_list):
         if active_models[i] and best_weights[i] is not None:
@@ -116,7 +115,5 @@ def backprop(dnn_list: Sequence[torch.nn.Module], x: torch.Tensor, y: torch.Tens
              if final_losses[i] > best_losses[i]:
                  dnn.load_state_dict(best_weights[i])
                  final_losses[i] = best_losses[i]
-
-    # plot_loss_history(loss_histories, dnn_list, config_name)
 
     return dnn_list, final_losses, loss_histories

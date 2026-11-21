@@ -1,9 +1,11 @@
 from dataclasses import dataclass, field
+from time import perf_counter
 from typing import Callable, Optional
 
 import numpy as np
 import torch
 
+from src.algorithms.fitness import score_predictions
 from .region_memory import ESSolutionRecord, RegionMemoryES
 
 
@@ -17,6 +19,8 @@ class ESTrainingResult:
     best_weights: np.ndarray | None = None
     regions_discovered: int = 0
     stored_candidates: int = 0
+    refresh_evaluations: int = 0
+    refresh_seconds: float = 0.0
 
 
 def _evaluate_solution(model, weights, x_train, y_train, loss_name: str, use_inversion: bool, use_regions: bool = True):
@@ -25,20 +29,9 @@ def _evaluate_solution(model, weights, x_train, y_train, loss_name: str, use_inv
             predictions, region_matrix = model.forward(weights, x_train, return_regions=True)
         else:
             predictions = model.forward(weights, x_train, return_regions=False)
-            region_matrix = np.array([], dtype=np.uint8)
-
-    if torch.isnan(predictions).any():
-        return -1e9, 1e9, region_matrix
-
-    if loss_name == "mse":
-        loss = torch.nn.functional.mse_loss(predictions, y_train).item()
-    elif loss_name == "mae":
-        loss = torch.nn.functional.l1_loss(predictions, y_train).item()
-    else:
-        loss = 1e9
-
-    fitness = 1.0 / (loss + 1e-8) if use_inversion else -loss
-    return float(fitness), float(loss), region_matrix
+            region_matrix = None
+        fitness, loss = score_predictions(predictions, y_train, loss_name, use_inversion)
+    return fitness, loss, region_matrix
 
 
 def initialize_region_memory(
@@ -86,8 +79,22 @@ def train_region_aware_es(
 
     num_genes = model.num_genes
     result = ESTrainingResult()
+    pwlu_layers = model.pwlu_layer_count if delta_decay_factor != 1.0 else 0
 
     for gen_idx in range(num_generations):
+        if gen_idx and pwlu_layers:
+            next_delta = model.delta * delta_decay_factor
+            if next_delta != model.delta:
+                start = perf_counter()
+                model.delta = next_delta
+                result.refresh_evaluations += region_memory.refresh(
+                    lambda weights: _evaluate_solution(
+                        model, weights, x_train, y_train, loss_name, use_inversion,
+                        use_regions=use_regions and pwlu_layers > 1,
+                    )
+                )
+                result.refresh_seconds += perf_counter() - start
+
         parents = region_memory.sample_parents(population_size, rng)
         if not parents:
             break
@@ -149,8 +156,8 @@ def train_region_aware_es(
 
         result.loss_history.append(best.loss)
 
-        if hasattr(model, "delta"):
-            model.delta *= delta_decay_factor
+        if (gen_idx + 1) % 50 == 0:
+            print(f"ES gen={gen_idx + 1}/{num_generations}, loss={best.loss:.4f}")
 
         if on_generation is not None:
             on_generation(gen_idx, best, accepted_this_gen, evaluated_this_gen, region_memory)

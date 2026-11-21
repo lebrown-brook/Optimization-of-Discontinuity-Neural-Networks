@@ -86,6 +86,20 @@ class SingleImageDataset(Dataset):
             print(f"Failed to load {mat_path}: {e}")
             return None
 
+    def full_grid(self):
+        """Return coords for every pixel (no sampling), normalized to [-1, 1], plus (H, W)."""
+        ys, xs = torch.meshgrid(torch.arange(self.H), torch.arange(self.W), indexing='ij')
+        coords = torch.stack([xs.flatten(), ys.flatten()], dim=1).float()
+        coords[:, 0] = (coords[:, 0] / (self.W - 1)) * 2.0 - 1.0
+        coords[:, 1] = (coords[:, 1] / (self.H - 1)) * 2.0 - 1.0
+        return coords, self.H, self.W
+
+    def full_luminance(self):
+        """Return the full H×W ground-truth luminance array in [0, 1] (no sampling)."""
+        img = Image.open(self.image_path).convert('RGB')
+        img_np = np.array(img).astype(np.float32) / 255.0  # (H, W, 3)
+        return 0.299 * img_np[:, :, 0] + 0.587 * img_np[:, :, 1] + 0.114 * img_np[:, :, 2]
+
     def __len__(self):
         return self.coords.shape[0]
 

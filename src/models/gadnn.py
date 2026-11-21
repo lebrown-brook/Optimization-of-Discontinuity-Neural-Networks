@@ -1,9 +1,7 @@
 import torch
 import torch.nn.functional as F
 import numpy as np
-import pygad as pg
-from src.activations import discontinuous as dl
-from src.activations import piecewise_linear as pwlu
+from src.activations import discontinuity_layers as disc
 
 class GADNN:
     def __init__(
@@ -38,6 +36,12 @@ class GADNN:
         self.num_genes = 0
 
         self._precalculate_architecture()
+
+    @property
+    def pwlu_layer_count(self):
+        if self.Disc_Activation != "pwlu":
+            return 0
+        return sum(layer["has_epsilon"] for layer in self.layer_params)
 
     @property
     def num_total_epsilon_neurons(self):
@@ -146,7 +150,7 @@ class GADNN:
                 if self.Disc_Activation == "disc":
                     # Logic: base(x) + epsilon * heaviside(x)
                     # Use custom autograd function for Heaviside (gradient=0)
-                    h_val = dl.heaviside_function.apply(out)
+                    h_val = disc.heaviside_function.apply(out)
 
                     if return_regions:
                         # Convert to numpy for storage/analysis
@@ -172,7 +176,7 @@ class GADNN:
                         regions_np = regions.detach().cpu().numpy()
                         collected_regions_list.append(regions_np)
 
-                    out = pwlu.PiecewiseLinearActivationFunction.apply(out, epsilon, self.delta, self.Relu_true)
+                    out = disc.PiecewiseLinearActivationFunction.apply(out, epsilon, self.delta, self.Relu_true)
             else:
                 # Standard Activation
                 if self.Relu_true:
@@ -242,62 +246,4 @@ def create_gadnn_model_func(input_size, hidden_layers, output_size, **kwargs):
     """
     gadnn = GADNN(input_size, hidden_layers, output_size, **kwargs)
     return gadnn.forward, gadnn.num_genes
-
-
-def create_ga_instance(
-        self,
-        fitness_func,
-        num_generations: int = 100,
-        sol_per_pop: int = 20,
-        num_parents_mating: int = 5,
-        init_range_low: float = -1.0,
-        init_range_high: float = 1.0,
-        parent_selection_type: str = "sss",
-        keep_parents: int = 2,
-        crossover_type: str = "single_point",
-        mutation_type: str = "random",
-        mutation_percent_genes: float = 10.0,
-        **kwargs
-):
-    """
-    Creates a PyGAD GA instance configured for this GADNN model.
-
-    Args:
-        fitness_func (callable): The function to evaluate the fitness of a solution.
-            It must accept (ga_instance, solution, solution_idx) and return a fitness value.
-        num_generations (int): Number of generations to run the evolutionary algorithm.
-        sol_per_pop (int): Number of solutions (chromosomes) in the population.
-        num_parents_mating (int): Number of parents to select from the population for mating.
-        init_range_low (float): Lower bound for the random initialization of genes.
-        init_range_high (float): Upper bound for the random initialization of genes.
-        parent_selection_type (str): Type of parent selection.
-            Options: 'sss' (Steady State), 'rws' (Roulette Wheel), 'sus' (Stochastic Universal),
-            'rank', 'random', 'tournament'.
-        keep_parents (int): Number of parents to keep in the next generation (elitism).
-            -1 means keep all parents.
-        crossover_type (str): Type of crossover operation.
-            Options: 'single_point', 'two_points', 'uniform', 'scattered'.
-        mutation_type (str): Type of mutation operation.
-            Options: 'random', 'swap', 'inversion', 'scramble', 'adaptive'.
-        mutation_percent_genes (float): Percentage of genes to mutate in a solution.
-        **kwargs: Additional arguments to pass to the pygad.GA constructor.
-
-    Returns:
-        pygad.GA: An instance of the Genetic Algorithm configured with the specified parameters.
-    """
-    return pg.GA(
-        num_generations=num_generations,
-        num_parents_mating=num_parents_mating,
-        fitness_func=fitness_func,
-        sol_per_pop=sol_per_pop,
-        num_genes=self.num_genes,
-        init_range_low=init_range_low,
-        init_range_high=init_range_high,
-        parent_selection_type=parent_selection_type,
-        keep_parents=keep_parents,
-        crossover_type=crossover_type,
-        mutation_type=mutation_type,
-        mutation_percent_genes=mutation_percent_genes,
-        **kwargs
-    )
 

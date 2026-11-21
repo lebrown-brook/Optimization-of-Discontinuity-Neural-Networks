@@ -7,7 +7,7 @@ import os
 # Ensure we can import from the root directory
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from src.activations import piecewise_linear as pwlu
+from src.activations import discontinuity_layers as disc
 
 class TorchDiscontinuousNeuralNetworkAnalyzer:
     def __init__(self, model):
@@ -20,7 +20,7 @@ class TorchDiscontinuousNeuralNetworkAnalyzer:
         # Identify discontinuous layers
         # We iterate over named modules to find DiscontinuousActivation or PiecewiseLinearActivation
         for name, module in self.model.named_modules():
-            if isinstance(module, pwlu.DiscontinuousActivation) or isinstance(module, pwlu.PiecewiseLinearActivation):
+            if isinstance(module, disc.DiscontinuousActivation) or isinstance(module, disc.PiecewiseLinearActivation):
                 self.disclayers.append({
                     'name': name,
                     'module': module,

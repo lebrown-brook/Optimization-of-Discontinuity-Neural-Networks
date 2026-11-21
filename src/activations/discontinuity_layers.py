@@ -1,6 +1,33 @@
-from typing import Optional
+from typing import Any, Optional
 import torch
-from . import discontinuous as dl
+
+
+class heaviside_function(torch.autograd.Function):
+    """Differentiable Heaviside step function. Gradient is zero everywhere."""
+    @staticmethod
+    def forward(ctx: Any, input: torch.Tensor) -> torch.Tensor:
+        return (input > 0).float()
+
+    @staticmethod
+    def backward(ctx: Any, grad_output: torch.Tensor) -> torch.Tensor:
+        # Subgradient is zero everywhere
+        return torch.zeros_like(grad_output)
+
+
+class heaviside_function_STE(torch.autograd.Function):
+    """Heaviside step function with Straight-Through Estimator (STE)."""
+    @staticmethod
+    def forward(ctx: Any, input: torch.Tensor) -> torch.Tensor:
+        ctx.save_for_backward(input)
+        return (input > 0).float()
+
+    @staticmethod
+    def backward(ctx: Any, grad_output: torch.Tensor) -> torch.Tensor:
+        # Use a straight-through estimator (STE)
+        input, = ctx.saved_tensors
+        # Using hardtanh as a surrogate gradient for the identity function in [-1, 1]
+        return torch.nn.functional.hardtanh(grad_output)
+
 
 class PiecewiseLinearActivationFunction(torch.autograd.Function):
     """Custom autograd function for piecewise linear activation."""
@@ -47,11 +74,8 @@ class PiecewiseLinearActivationFunction(torch.autograd.Function):
             torch.where(input <= delta, input / delta, torch.ones_like(input))
         )
 
-        # adjust grad_epsilon shape if needed (sum over batch)
-        if grad_epsilon.shape != epsilon.shape:
-            grad_epsilon = grad_epsilon.sum(dim=0)
-
-        return grad_output * grad_input, grad_output * grad_epsilon, None, None
+        grad_epsilon = (grad_output * grad_epsilon).sum_to_size(epsilon.shape)
+        return grad_output * grad_input, grad_epsilon, None, None
 
 
 class PiecewiseLinearActivation(torch.nn.Module):
@@ -67,7 +91,7 @@ class PiecewiseLinearActivation(torch.nn.Module):
             self.epsilon = torch.nn.Parameter(torch.randn(output_size, dtype=torch.float32, device=device))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return PiecewiseLinearActivationFunction.apply(x, self.epsilon, self.delta,self.Relu_true)
+        return PiecewiseLinearActivationFunction.apply(x, self.epsilon, self.delta, self.Relu_true)
 
 
 class DiscontinuousActivation(torch.nn.Module):
@@ -78,7 +102,7 @@ class DiscontinuousActivation(torch.nn.Module):
         self.epsilon_init = epsilon_init
 
         self.relu = torch.nn.ReLU() if self.Relu_true else torch.nn.ELU()
-        self.eps_act = dl.heaviside_function_STE if self.STE_true else dl.heaviside_function
+        self.eps_act = heaviside_function_STE if self.STE_true else heaviside_function
 
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         if epsilon_init is not None:

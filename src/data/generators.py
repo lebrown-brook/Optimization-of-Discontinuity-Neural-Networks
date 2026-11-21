@@ -1,21 +1,20 @@
-from typing import Callable, List, Optional, Sequence, Tuple
+from typing import Callable, Tuple
+
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, TensorDataset
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-from src.data import test_functions as tfp
 from sklearn.preprocessing import StandardScaler
 
-#create a simple step function to approximate with the DNN class
+from src.data import test_functions as tfp
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 1-D benchmark functions (built-in, for basic_1d group)
+# ──────────────────────────────────────────────────────────────────────────────
+
 def step_function(x: np.ndarray) -> np.ndarray:
     return np.where(x > -1, 3.0, 0.0)
 
 def piecewise_linear_function(x: np.ndarray) -> np.ndarray:
-   #f(x) = -2x + 1 for x < -5
-    # f(x)= 3 for -5 <= x <= 5
-    # f(x) = 0.5x - 2 for x > 5
     y = np.zeros_like(x)
     y[x < -5] = -2.0 * x[x < -5] + 1.0
     y[x >= -5] = 3.0
@@ -36,146 +35,92 @@ def sine_with_discontinuity(x: np.ndarray) -> np.ndarray:
 
 def linear_with_varying_slopes(x: np.ndarray) -> np.ndarray:
     return np.where(x < -5, -0.5 * x,
-                    np.where(x < 0, 2 * x,
-                             np.where(x < 5, -x + 5, 0.5 * x)))
+           np.where(x < 0,   2 * x,
+           np.where(x < 5,  -x + 5, 0.5 * x)))
 
-#generate some sample data
-def generate_data(num_samples: int = 100, function: str = "step_function", input_dim: int = 1, x_min: float = -10.0, x_max: float = 10.0) -> Tuple[torch.Tensor, torch.Tensor]:
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Core data generation
+# ──────────────────────────────────────────────────────────────────────────────
+
+def generate_data(
+    num_samples: int = 100,
+    function: str = "step_function",
+    input_dim: int = 1,
+    x_min: float = -10.0,
+    x_max: float = 10.0,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Sample random inputs and evaluate the named function.
+
+    Returns (X, y) as float32 tensors with shapes (N, input_dim) and (N, 1).
+    """
+    x = np.random.uniform(low=x_min, high=x_max, size=(num_samples, input_dim))
 
     if hasattr(tfp, function):
-        input_size = 2
-        x = np.random.uniform(low=x_min, high=x_max, size=(num_samples, input_dim))
         y = getattr(tfp, function)(x)
     elif function in globals():
-        input_size = 1
-        x = np.random.uniform(low=x_min, high=x_max, size=(num_samples, input_dim))
         y = globals()[function](x)
     else:
-        raise ValueError(f"Unknown function: {function}")
-    return torch.tensor(x, dtype=torch.float32), torch.tensor(y, dtype=torch.float32)
+        raise ValueError(f"Unknown function: '{function}'")
+
+    return (
+        torch.tensor(x, dtype=torch.float32),
+        torch.tensor(y, dtype=torch.float32),
+    )
 
 
-def plot_loss_history(loss_histories: List[List[float]], dnn_list: Sequence[torch.nn.Module], config_name: str = "") -> None:
-    plt.figure(figsize=(10, 6))
-    for i, losses in enumerate(loss_histories):
-        if len(losses) > 0:
-            plt.plot(losses, label=f'{dnn_list[i].name} Loss')
+def load_image_data(
+    image_path: str,
+    num_samples: int,
+):
+    """Load image pixels as (coord, grayscale) pairs via SingleImageDataset.
 
-    plt.xlabel('Epoch')
-    plt.ylabel('MSE Loss')
-    plt.title(f'Loss History ({config_name})')
-    plt.legend()
-    plt.yscale('log')
-    plt.grid(True)
-
-    import os
-    if not os.path.exists('loss_history'):
-        os.makedirs('loss_history')
-
-    save_path = f'loss_history/{config_name}.png' if config_name != "" else 'loss_history/loss_history_test.png'
-    plt.savefig(save_path)
-    plt.close()
+    Returns (X, y, dataset) where X is (N, 2) coords in [-1, 1], y is (N, 1)
+    luminance, and dataset is the SingleImageDataset (for full-grid reconstruction).
+    """
+    from src.data.image_dataset import SingleImageDataset
+    dataset = SingleImageDataset(image_path, num_samples=num_samples)
+    X = dataset.coords                      # (N, 2), already in [-1, 1]
+    colors = dataset.colors                 # (N, 3), in [0, 1]
+    y = (0.299 * colors[:, 0] + 0.587 * colors[:, 1] + 0.114 * colors[:, 2]).unsqueeze(1)
+    return X, y, dataset
 
 
+def prepare_experiment_data(func_name: str, group_cfg: dict):
+    """
+    Generate, scale, and return training data for one experiment group entry.
+
+    Returns:
+        X_train       — scaled input tensor (N, input_dim)
+        y_train       — target tensor (N, 1)
+        scaler        — fitted StandardScaler (for inverse-transforming plots)
+        image_dataset — SingleImageDataset if this is an image group, else None
+    """
+    if "image_paths" in group_cfg:
+        X_raw, y_train, image_dataset = load_image_data(func_name, group_cfg["num_samples"])
+    else:
+        X_raw, y_train = generate_data(
+            num_samples=group_cfg["num_samples"],
+            function=func_name,
+            input_dim=group_cfg["input_dim"],
+            x_min=group_cfg["x_min"],
+            x_max=group_cfg["x_max"],
+        )
+        image_dataset = None
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X_raw.numpy())
+    X_train = torch.tensor(X_scaled, dtype=torch.float32)
+    return X_train, y_train, scaler, image_dataset
 
 
-#print parameters of the DNN
-def print_dnn_parameters(dnn: torch.nn.Module, showvalue = False) -> None:
-    print(f"\n{'='*20} Model: {dnn.name} {'='*20}")
-    for name, module in dnn.named_modules():
-        # Skip container modules, focus on layers with parameters
-        params = list(module.named_parameters(recurse=False))
-        if params:
-            print(f"\n[Layer: {name}] Type: {type(module).__name__}")
-            for p_name, p in params:
-                print(f"  - {p_name} (shape: {list(p.shape)}):")
-                if showvalue:
-                    print(f"    {p.data}")
+# ──────────────────────────────────────────────────────────────────────────────
+# Utility
+# ──────────────────────────────────────────────────────────────────────────────
 
-def plotNN_list(dnn_list: Sequence[torch.nn.Module], x_samples: torch.Tensor, y_samples: torch.Tensor, n: Optional[int] = None, config_name: str = "", scaler=None) -> None:
-    with torch.no_grad():
-        input_dim = x_samples.shape[1]
-        plt.figure(figsize=(15, 5 * len(dnn_list)))
-
-        # Prepare original x_samples for plotting and range calculation
-        x_samples_np = x_samples.cpu().numpy()
-        if scaler is not None:
-            x_samples_orig = scaler.inverse_transform(x_samples_np)
-        else:
-            x_samples_orig = x_samples_np
-
-        # Calculate ranges with margin
-        mins = x_samples_orig.min(axis=0)
-        maxs = x_samples_orig.max(axis=0)
-        ranges = maxs - mins
-        # Handle case where range is 0 (single point)
-        ranges[ranges == 0] = 1.0
-
-        mins -= 0.1 * ranges
-        maxs += 0.1 * ranges
-
-        # Generate grid for plotting
-        if input_dim == 1:
-            x_grid_orig = np.linspace(mins[0], maxs[0], 1000).reshape(-1, 1)
-            grid_inputs_orig = x_grid_orig
-        elif input_dim == 2:
-            x_grid = np.linspace(mins[0], maxs[0], 100)
-            y_grid = np.linspace(mins[1], maxs[1], 100)
-            X, Y = np.meshgrid(x_grid, y_grid)
-            grid_inputs_orig = np.column_stack((X.ravel(), Y.ravel()))
-
-        # Scale grid inputs for model prediction
-        if scaler is not None:
-            grid_inputs_scaled = scaler.transform(grid_inputs_orig)
-            grid_inputs = torch.tensor(grid_inputs_scaled, dtype=torch.float32)
-        else:
-            grid_inputs = torch.tensor(grid_inputs_orig, dtype=torch.float32)
-
-        # Ensure device compatibility
-        if len(dnn_list) > 0:
-            device = next(dnn_list[0].parameters()).device
-            grid_inputs = grid_inputs.to(device)
-
-        for i, dnn in enumerate(dnn_list):
-            if input_dim == 1:
-                y_pred = dnn(grid_inputs)
-                plt.subplot(len(dnn_list), 1, i + 1)
-                plt.plot(grid_inputs_orig, y_pred.cpu().numpy(), color='blue', label=f'{dnn.name} Prediction')
-                plt.scatter(x_samples_orig, y_samples.cpu().numpy(), color='red', label='Training Data')
-                plt.xlabel('Input')
-                plt.ylabel('Output')
-            elif input_dim == 2:
-                Z = dnn(grid_inputs).reshape(X.shape).cpu().detach().numpy()
-                plt.subplot(len(dnn_list), 1, i + 1)
-                cp = plt.contourf(X, Y, Z, cmap='viridis', levels=50)
-                plt.colorbar(cp)
-                # Scatter plot training data
-                plt.scatter(x_samples_orig[:, 0], x_samples_orig[:, 1], c=y_samples.cpu().numpy().flatten(), cmap='viridis', edgecolors='white', linewidth=0.5, label='Training Data')
-                plt.xlabel('Input X1')
-                plt.ylabel('Input X2')
-
-            title_suffix = f"epoch={n}" if n is not None else "final"
-            plt.title(f'({config_name}) Approximation {title_suffix}')
-            plt.legend()
-
-        plt.tight_layout()
-
-        # Create a plots directory if it doesn't exist or skip saving if no config_name for the testing
-        if config_name == "":
-            plt.close()
-            return
-
-        import os
-        if not os.path.exists('plots_advanced'):
-            os.makedirs('plots_advanced')
-
-        save_path = f'plots_advanced/dnns_plot_{dnn.name}_{config_name}_{n}.png'
-        plt.savefig(save_path)
-        plt.close()
-
-def create_model_with_shared_init(model_cls: Callable, *args, shared_seed: int = 42, **kwargs) -> torch.nn.Module:
-    """Set global RNGs to a shared seed then create the model so initial weights match."""
+def create_model_with_shared_init(
+    model_cls: Callable, *args, shared_seed: int = 42, **kwargs
+) -> torch.nn.Module:
+    """Seed all RNGs then instantiate model so initial weights are reproducible."""
     torch.manual_seed(shared_seed)
     np.random.seed(shared_seed)
     if torch.cuda.is_available():
@@ -183,7 +128,13 @@ def create_model_with_shared_init(model_cls: Callable, *args, shared_seed: int =
     return model_cls(*args, **kwargs)
 
 
-
-#main function that runs the tests
-if __name__ == "__main__":
-    pass
+def print_dnn_parameters(dnn: torch.nn.Module, showvalue: bool = False) -> None:
+    print(f"\n{'='*20} Model: {dnn.name} {'='*20}")
+    for name, module in dnn.named_modules():
+        params = list(module.named_parameters(recurse=False))
+        if params:
+            print(f"\n[Layer: {name}] Type: {type(module).__name__}")
+            for p_name, p in params:
+                print(f"  - {p_name} (shape: {list(p.shape)})")
+                if showvalue:
+                    print(f"    {p.data}")
